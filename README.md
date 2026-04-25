@@ -1,25 +1,27 @@
-# Chicago Urgent Care Accessibility Analysis
+# Chicago Healthcare Accessibility Analysis
 
 > A Python-first geospatial pipeline that identifies underserved neighbourhoods
-> in Chicago for urgent care clinic expansion using real road-network drive-time
-> analysis and population data.
+> in Chicago for public and community health clinic expansion using real road-network
+> drive-time analysis and population data.
 
 ---
 
 ## Portfolio Pitch
 
 *"Built a network-based accessibility analysis pipeline in Python using OSMnx and
-NetworkX to identify underserved Chicago neighbourhoods for urgent care clinic
-placement. Produced a gap-scored map and a one-page business recommendation PDF,
-both generated programmatically. QGIS used for final publication-quality cartography."*
+NetworkX to identify underserved Chicago neighbourhoods for public and community
+health clinic placement. Produced a gap-scored map and a one-page business
+recommendation PDF, both generated programmatically. QGIS used for final
+publication-quality cartography."*
 
 ---
 
 ## What This Project Does
 
 This pipeline downloads 4 open datasets, builds a real road network graph of
-Chicago, generates drive-time isochrones from every existing urgent care clinic,
-and scores every census tract by how underserved it is relative to its population.
+Chicago, generates drive-time isochrones from every existing public and community
+health clinic, and scores every census tract by how underserved it is relative to
+its population.
 
 The final outputs are:
 - A GeoPackage loaded into QGIS for a styled choropleth map
@@ -33,8 +35,8 @@ for final map styling and print layout.
 
 ## The Core Question
 
-**"Which Chicago neighbourhoods have the worst access to urgent care,
-and where should the next three clinics be built?"**
+**"Which Chicago neighbourhoods have the worst access to public and community
+health clinics, and where should the next three clinics be built?"**
 
 ---
 
@@ -44,8 +46,8 @@ and where should the next three clinics be built?"**
 
 You have 4 datasets. You want one number per census tract — a gap score. The
 pipeline takes raw data from 4 different internet sources and answers one question:
-which Chicago neighbourhoods have the worst access to urgent care, weighted by
-how many people live there?
+which Chicago neighbourhoods have the worst access to public and community health
+clinics, weighted by how many people live there?
 
 ### Why 5 Stages Instead of One Script
 
@@ -99,8 +101,8 @@ and justification, coverage statistics. No manual writing.
 ### The Whole Thing as One Story
 
 Chicago has 801 census tracts. You want to find which ones are most underserved
-by urgent care. You download the road network, build a graph, and calculate real
-drive-time coverage from every existing clinic. You compute a gap score per tract
+by public and community health clinics. You download the road network, build a
+graph, and calculate real drive-time coverage from every existing clinic. You compute a gap score per tract
 that combines population with lack of coverage. The map shows Chicago in a
 cool-to-warm colour scale — blue tracts are well-served, red tracts are
 underserved. The PDF brief tells a healthcare executive exactly where to open
@@ -116,16 +118,16 @@ Read it out loud a few times before an interview.
 ### The One-Line Pitch
 
 "It's a Python pipeline that figures out which Chicago neighbourhoods are the
-most underserved by urgent care clinics, and recommends where to build the next
-three. It uses real drive-time analysis on the road network, not just circles
-on a map."
+most underserved by public and community health clinics, and recommends where
+to build the next three. It uses real drive-time analysis on the road network,
+not just circles on a map."
 
 ### The Big Idea
 
 You have four datasets. You want one number for every Chicago neighbourhood — a
 gap score. The pipeline pulls raw data from four different sources and answers
-one question: which neighbourhoods have the worst access to urgent care,
-weighted by how many people actually live there?
+one question: which neighbourhoods have the worst access to public and community
+health clinics, weighted by how many people actually live there?
 
 Everything is Python. QGIS only touches the final output. The pipeline also
 writes a one-page PDF brief automatically — no manual writing at the end.
@@ -157,7 +159,7 @@ a speed based on the type of road (motorway, residential, etc.) and a travel
 time in seconds. Then for every existing clinic, it traces outward through
 the road network to find every intersection you could reach within 10 minutes
 and within 20 minutes. Those reachable points become a polygon — the isochrone.
-Finally it merges all 47 clinic isochrones into one big "total 10-minute
+Finally it merges all the per-clinic isochrones into one big "total 10-minute
 coverage" polygon and one "total 20-minute coverage" polygon. This stage exists
 because the whole project only makes sense if the drive-time analysis is real —
 using circles instead would defeat the point.
@@ -294,6 +296,160 @@ Side and downtown. This means the gap analysis will find genuine, meaningful
 gaps — the map tells an interesting story. Run the same analysis on a small,
 compact city and everything comes out covered, which makes for a boring map
 and a pointless recommendation.
+
+---
+
+## Challenges Faced
+
+These are the things that didn't go to plan during implementation. They're the
+most interesting parts to talk about in an interview — every one is an example
+of "the documents lied, look at the actual data."
+
+### 1. The documented Chicago Data Portal dataset IDs were wrong
+
+The Chicago Data Portal exposes datasets by short alphanumeric IDs (like
+`iqnk-2tcu`). The reference docs pointed at two specific clinic datasets by ID.
+The first one, when actually queried, returned epidemiological *rates per
+community area* — birth rates, cancer rates, lead poisoning rates — with no
+clinic locations at all. The second one was a 404; the dataset had been
+removed. The whole project would have silently produced an empty map if I'd
+trusted the docs.
+
+What saved it was a defensive logging rule: **before parsing any API response,
+log its actual columns and a sample record.** That made the mismatch visible
+on the first run. From there I queried the Chicago Data Portal's catalog API
+with `q=health clinic` to find the real, currently-live datasets — `kcki-hnch`
+(CDPH clinic locations, 24 sites) and `cjg8-dbka` (Primary Care Community
+Health Centers, 120 sites). Combined and de-duplicated by coordinate to 139
+total facilities.
+
+The interview takeaway: live APIs drift. Field names change between versions,
+datasets get deprecated and replaced, response shapes don't match the docs.
+The defensive habit of *logging what you got before parsing it* is what turns
+a silent failure into a fixable one.
+
+### 2. `gpd.clip` produced 71 invisible "ghost" tracts
+
+Stage 2 clips Cook County tracts to the Chicago city boundary. The standard
+geometry-validation pattern — drop nulls, drop empties, drop invalids — let
+through 71 tracts that had been clipped down to zero-area `MultiLineString`
+and `Point` geometries. These were Cook County suburbs whose tract polygons
+happened to share a small boundary segment with Chicago; the clip operation
+reduced their geometry to that shared line.
+
+These ghosts were technically valid geometries (not empty, not null, not
+invalid) but had `area = 0`. They inflated Chicago's "population" total to
+3.08 million — about 15% above the real number — because the population value
+was kept even though the geometry was meaningless. They would also have
+caused division-by-zero in Stage 4's coverage-fraction calculation.
+
+The fix was a one-line filter: after every clip, keep only `Polygon` and
+`MultiPolygon` geometries (or `Point`/`MultiPoint` for the clinics layer).
+After that, Chicago's population dropped to 2,665,636 — matching ACS 2022
+estimates almost exactly.
+
+The interview takeaway: "valid" is a low bar. Geometry validation has to
+include "is this the *type* of geometry I expected?", not just "is it
+well-formed?".
+
+### 3. OSMnx v2's road graph is ten times smaller than the docs assumed
+
+The reference docs estimated Chicago's drive-network graph would have
+200,000–400,000 nodes and 500,000–900,000 edges. The actual graph came in at
+**29,621 nodes and 77,709 edges** — about a tenth of the predicted size.
+
+The reason is that OSMnx v2 defaults to `simplify=True`, which collapses
+chains of degree-2 intermediate nodes into single edges (a long straight
+street becomes one edge instead of dozens). The total road network is
+identical — segment lengths and travel times are preserved — but the graph
+representation is much smaller. Stage 3, which the docs warned might take
+5–15 minutes of CPU time, completed in 93 seconds.
+
+The interview takeaway: when something runs much faster than expected, that's
+a signal to *verify* it actually did the work, not just declare victory. I
+round-tripped the graph to disk and back to confirm `travel_time` and
+`length` were preserved, then sanity-checked one clinic's isochrone polygon
+shape before running the full loop of 138.
+
+### 4. OSMnx v2 added a hidden dependency on scikit-learn
+
+When I called `ox.nearest_nodes()` to find the closest graph node to each
+clinic, it raised `ImportError: scikit-learn must be installed as an optional
+dependency to search an unprojected graph`. The original docs and the v1
+OSMnx API didn't require it. v2 uses scikit-learn's `BallTree` for
+nearest-neighbour search on lat/lon graphs.
+
+Easy fix — `pip install scikit-learn`, add it to `requirements.txt` — but
+worth flagging because it's the kind of "the library you depend on quietly
+grew a new dependency between major versions" issue that breaks
+reproducibility for anyone else cloning the repo.
+
+### 5. Field names and CRSes weren't quite what the docs said
+
+A handful of small mismatches that didn't break anything but each took a
+moment to debug:
+
+- The docs predicted Census tracts would have columns named `AREALAND` and
+  `AREAWATER`. The TIGER 2020 vintage actually uses `ALAND` and `AWATER`.
+  A defensive column filter (`[c for c in keep if c in tracts.columns]`)
+  caught this without crashing.
+- The docs said tracts would arrive in EPSG:4326 (WGS84). pygris natively
+  returns EPSG:4269 (NAD83). For Chicago the difference is sub-metre, and
+  `to_crs(...)` reprojects either correctly, but the assertion in my smoke
+  test had to be loosened.
+- The Chicago boundary area was predicted at ~589 km². TIGER's 2024
+  "places" polygon includes water and shoreline, so the actual reprojected
+  area is 607 km². The sanity-check range I'd written (500–700 km²) caught
+  this without raising an error.
+
+The interview takeaway: when you're integrating five different open-data
+sources, every one of them has small surprises. Assertions and sanity ranges
+that *log* rather than *crash* are the difference between "I noticed and
+adjusted" and "the pipeline died at 2am".
+
+### 6. Convex-hull isochrones overestimate coverage near the lake and city edges
+
+The choice to build isochrone polygons as the convex hull of reachable graph
+nodes is a known simplification (alpha shapes would be more accurate but
+require tuning a concavity parameter per city). What I didn't fully appreciate
+going in was how much it would inflate the *raw* coverage numbers: the
+dissolved 10-minute union came out at 643 km² — 106% of Chicago's land area —
+because the hulls extend out into Lake Michigan and into the surrounding Cook
+County suburbs.
+
+The fix was to clip the isochrone union to the Chicago boundary before
+computing per-tract coverage fractions. After that, real Chicago-only
+coverage came in at 91.6% at 10 minutes and 94.0% at 20 minutes — leaving a
+meaningful 8.4% uncovered zone (about 51 km²) for the gap analysis to score.
+I documented the convex-hull simplification as a scope note in the PDF brief
+rather than switching to alpha shapes mid-flight.
+
+The interview takeaway: when an analytical method has a known accuracy
+ceiling, surface it in the deliverable. Don't pretend the result is more
+precise than the method allows.
+
+### 7. The clinic dataset shapes the result, not just the geography
+
+The Chicago Data Portal cleanly publishes CDPH-run public clinics and
+federally-funded community health centers. It does not cleanly publish
+commercial walk-in clinics (hospital-affiliated urgent cares, retail
+pharmacy clinics, private practices). That choice of dataset directly
+shapes where the gap analysis finds gaps: public and community health
+clinics are deliberately concentrated on the South and West Side because
+that's where the population health need is documented, so those areas come
+out *well-served* by this dataset. The Northwest Side relies on commercial
+walk-in clinics that aren't in the data, so it shows up as the biggest gap
+in the analysis.
+
+That's a real, true result for the question "where are the gaps in *public
+and community health clinic* coverage?" — but it would be misleading to
+present it as "where are the gaps in healthcare access overall". The PDF
+brief surfaces this explicitly as a scope caveat under the recommendations
+table.
+
+The interview takeaway: every analysis is shaped by the data you have, not
+the data you wish you had. Make the scope of the question match the scope
+of the data, and call out that boundary in the deliverable.
 
 ---
 
@@ -441,7 +597,7 @@ as many times as needed without recomputing them.
 | `tracts_scored` | All Chicago census tracts with population + gap score |
 | `isochrones_10min` | Union of all 10-minute drive polygons from existing clinics |
 | `isochrones_20min` | Union of all 20-minute drive polygons |
-| `clinics` | Existing urgent care clinic point locations |
+| `clinics` | Existing public and community health clinic point locations |
 | `gap_points` | Top 3 recommended new clinic locations |
 
 ### `outputs/brief.pdf`
@@ -481,7 +637,7 @@ All data is free and openly licensed. See `DATA_SOURCES.md` for full details.
 | Dataset | Source | Licence |
 |---|---|---|
 | Census tracts + population | US Census Bureau ACS | Public domain |
-| Urgent care clinics | Chicago Data Portal | Open data |
+| Public + community health clinics | Chicago Data Portal | Open data |
 | Road network | OpenStreetMap via OSMnx | ODbL |
 | City boundary | US Census Bureau TIGER | Public domain |
 
