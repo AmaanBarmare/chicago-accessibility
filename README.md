@@ -273,6 +273,97 @@ that difference is the entire point.
 
 ---
 
+## The Algorithm — Why Dijkstra's Specifically
+
+You can't talk about the road network without talking about the algorithm that
+traces it. This project uses Dijkstra's algorithm. Here's why that's the right
+choice for this problem and not someone else's.
+
+### What we're actually computing
+
+For every clinic, we need to answer: "from this point on the road network,
+which intersections can I reach in 600 seconds or less, weighted by travel
+time on each road segment?"
+
+That's a **single-source shortest-path problem with a stopping condition and
+non-negative edge weights** — and Dijkstra's algorithm is the textbook answer
+for that exact shape:
+
+- It explores outward from the source in order of cumulative cost, always
+  extending the cheapest known path next.
+- Because no edge has a negative weight (travel times are physically
+  positive), the first time it reaches a node is guaranteed to be via the
+  shortest path. No revisits needed.
+- We stop expanding when the cheapest unprocessed path exceeds the
+  time budget (600 s for 10-minute, 1200 s for 20-minute). Everything
+  reached before that stop is a valid isochrone node.
+
+NetworkX's `ego_graph(G, source, radius=600, distance="travel_time")` is
+implemented as truncated Dijkstra under the hood — same algorithm, just
+packaged as a one-line call.
+
+### Why not the alternatives
+
+**BFS (Breadth-First Search).** Counts *hops*, not weighted distance. A
+100-metre residential cross-street and a 5-kilometre stretch of I-90 are both
+"one hop" in BFS. For drive-time routing on a real road network where edges
+have wildly different costs, BFS is the wrong tool — it would tell you
+everywhere you can reach in *N intersections*, not *N seconds*.
+
+**A\*.** Single-source, *single-target* search with a heuristic that prunes
+the frontier toward a known goal. We don't have a single target — we have
+hundreds of unknown targets (every node within the time budget). A\*'s
+heuristic only helps when you know where you're going. We don't, so its
+biggest advantage disappears.
+
+**Bellman-Ford.** Handles negative-weight edges (Dijkstra cannot), but at
+O(V·E) versus Dijkstra's O((V + E) log V). We don't have negative weights —
+travel times are physically positive — so paying for negative-weight support
+gets us nothing and costs us a lot.
+
+**Floyd-Warshall.** Computes shortest paths between *all pairs* of nodes in
+O(V³). For 30,000 nodes that's 27 trillion operations. We don't need all
+pairs; we need single-source from each of 138 clinics. Wrong shape, wrong
+cost.
+
+**The 2025 Tsinghua/Stanford algorithm.** A team published a single-source
+shortest-path algorithm earlier this year that breaks the long-standing
+O(m log n) "sorting barrier" on directed graphs with non-negative weights,
+achieving roughly O(m · log^(2/3) n). It's a real theoretical milestone — a
+great "ask me about recent algorithmic work" moment in an interview — but
+it's not in NetworkX (or any production routing library) yet. At our problem
+size (30k nodes, 78k edges) the practical speedup over a well-tuned Dijkstra
+would be tiny. The pragmatic choice is the boring, battle-tested implementation.
+
+### Where else this same algorithm runs
+
+Dijkstra, or close variants of it, is what powers:
+
+- **Google Maps / Apple Maps / Waze** turn-by-turn routing — typically
+  bidirectional Dijkstra with a heuristic, on a contracted hierarchy graph
+  for speed at country scale.
+- **DoorDash** delivery dispatch — single source (the courier or the
+  restaurant), shortest paths to potential drop-offs on the same kind of
+  OSM-style road graph we're using here.
+- **Uber, Lyft** ride-matching and ETA estimation.
+- **OSRM, Valhalla, GraphHopper** — the open-source routing engines behind
+  most "show me the drive time" features on the web.
+
+When you've built this pipeline, you've built a (much smaller) version of
+what runs in production at every routing-driven company. That is a real
+talking point.
+
+### Interview takeaway
+
+The right way to pick an algorithm is by the *shape of the problem*, not by
+which name you've heard most. This problem is single-source, multi-destination,
+non-negative weights, with a hard distance budget. Dijkstra fits it like a
+glove. BFS, A\*, Bellman-Ford, and Floyd-Warshall each fail one of those four
+conditions, and the newest theoretical work doesn't change the engineering
+answer at this scale.
+
+---
+
 ## Why Chicago
 
 Three reasons, all portfolio-driven.
